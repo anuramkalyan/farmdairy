@@ -44,7 +44,7 @@ public class ProductService {
         );
 
         Product savedProduct = productRepository.save(product);
-        return toResponse(product);
+        return toResponse(savedProduct);
     }
 
     @Transactional
@@ -66,8 +66,9 @@ public class ProductService {
     }
 
     @Transactional
-    public void deleteProduct() {
-
+    public void deleteProduct(Long id) {
+        Product product = findProductOrThrow(id);
+        productRepository.delete(product);
     }
 
     private Product findProductOrThrow(Long id) {
