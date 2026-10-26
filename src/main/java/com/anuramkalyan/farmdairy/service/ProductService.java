@@ -4,6 +4,10 @@ import com.anuramkalyan.farmdairy.dto.ProductRequest;
 import com.anuramkalyan.farmdairy.dto.ProductResponse;
 import com.anuramkalyan.farmdairy.entity.Product;
 import com.anuramkalyan.farmdairy.repository.ProductRepository;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -89,5 +93,13 @@ public class ProductService {
                 product.isAvailable(),
                 product.getCreatedAt()
         );
+    }
+
+    public Page<ProductResponse> searchProducts(String category, Boolean available, int page, int size) {
+        Pageable pageable = PageRequest.of(page, size, Sort.by("id").ascending());
+
+        String normalizedCategory = category == null || category.isBlank() ? null : category.trim().toUpperCase();
+
+        return productRepository.search(normalizedCategory, available, pageable).map(this::toResponse);
     }
 }
