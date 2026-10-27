@@ -1,5 +1,6 @@
 package com.anuramkalyan.farmdairy.exception;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -8,7 +9,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.server.ResponseStatusException;
 
-import javax.naming.AuthenticationException;
+import org.springframework.security.core.AuthenticationException;
 import java.util.stream.Collectors;
 
 @RestControllerAdvice
@@ -59,6 +60,19 @@ public class GlobalExceptionHandler {
         );
 
         problem.setTitle("Authentication failed");
+        return problem;
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ProblemDetail handleDataIntegrityViolation(
+            DataIntegrityViolationException ex) {
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.CONFLICT,
+                "The request conflicts with existing data."
+        );
+
+        problem.setTitle("Data conflict");
         return problem;
     }
 }

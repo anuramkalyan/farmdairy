@@ -1,7 +1,6 @@
 package com.anuramkalyan.farmdairy.entity;
 
 import jakarta.persistence.*;
-import org.hibernate.validator.constraints.UniqueElements;
 
 import java.time.LocalDateTime;
 

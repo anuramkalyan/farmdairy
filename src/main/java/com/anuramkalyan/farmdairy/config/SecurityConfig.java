@@ -15,7 +15,6 @@ import org.springframework.security.config.annotation.method.configuration.Enabl
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 
-import org.springframework.security.core.authority.mapping.SimpleAuthorityMapper;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
@@ -35,11 +34,8 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
 import java.util.Base64;
+import java.util.Locale;
 
-import org.springframework.security.authentication.AuthenticationProvider;
-import org.springframework.security.core.userdetails.UserDetails;
-
-import org.springframework.security.config.Customizer;
 import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
@@ -57,7 +53,7 @@ public class SecurityConfig {
 
         return email -> {
             var account = repository.findByEmail(
-                    email.trim().toLowerCase()
+                    email.trim().toLowerCase(Locale.ROOT)
             ).orElseThrow(() ->
                     new UsernameNotFoundException(
                             "Invalid email or password"
@@ -154,7 +150,8 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(
                                 "/api/v1/auth/register",
-                                "/api/v1/auth/login"
+                                "/api/v1/auth/login",
+                                "/error"
                         ).permitAll()
                         .requestMatchers(
                                 org.springframework.http.HttpMethod.GET,

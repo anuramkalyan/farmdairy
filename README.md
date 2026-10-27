@@ -1,8 +1,8 @@
 # FarmDairy API
 
-Backend REST API for **FarmDairy**, a dairy ordering and milk-subscription platform. Customers can browse the product catalogue and create accounts; administrators manage products. Built with **Java 21, Spring Boot, Spring Security and PostgreSQL**.
+Backend REST API for **FarmDairy**, a dairy ordering and milk-subscription platform. Customers can browse the product catalogue, fill a shopping cart, place orders and set up recurring milk subscriptions; administrators manage products. Built with **Java 21, Spring Boot, Spring Security and PostgreSQL**.
 
-> **Status:** in active development. Product catalogue and authentication are complete. Cart, orders, milk subscriptions (with pause/resume) and payment-gateway sandbox integration are planned next.
+> **Status:** in active development. Product catalogue, authentication, shopping cart, orders and milk subscriptions (with pause/resume/cancel) are in place. Automatic delivery scheduling, delivery addresses and payment-gateway sandbox integration are planned next.
 
 ---
 
@@ -15,6 +15,9 @@ Backend REST API for **FarmDairy**, a dairy ordering and milk-subscription platf
 - [API documentation](#api-documentation)
   - [Authentication](#authentication)
   - [Products](#products)
+  - [Cart](#cart)
+  - [Orders](#orders)
+  - [Subscriptions](#subscriptions)
   - [Error responses](#error-responses)
 - [Roadmap](#roadmap)
 
@@ -40,6 +43,9 @@ Backend REST API for **FarmDairy**, a dairy ordering and milk-subscription platf
 - **Role-based access control** with two roles, `CUSTOMER` and `ADMIN`
   - Anyone can browse products
   - Only admins can create, update or delete products
+- **Shopping cart**: add, update and remove items; adding a product that's already in the cart increases its quantity
+- **Orders**: place an order from the cart, with prices and product names saved at the time of purchase; view order history
+- **Milk subscriptions**: daily, alternate-day or weekly deliveries that can be paused, resumed and cancelled
 - **Customer self-registration** with BCrypt-hashed passwords
 - **Admin account bootstrap** from environment variables on startup
 - **Request validation** with clear, field-level error messages
@@ -51,10 +57,10 @@ Backend REST API for **FarmDairy**, a dairy ordering and milk-subscription platf
 ```
 src/main/java/com/anuramkalyan/farmdairy
 ├── config/        SecurityConfig (JWT, roles, endpoint rules), AdminAccountInitializer
-├── controller/    AuthController, ProductController (REST endpoints)
-├── service/       AuthService, ProductService (business logic)
+├── controller/    Auth, Product, Cart, Order and Subscription controllers (REST endpoints)
+├── service/       Auth, Product, Cart, Order and Subscription services (business logic)
 ├── repository/    Spring Data JPA repositories
-├── entity/        AppUser, Product, Role (database tables)
+├── entity/        AppUser, Product, CartItem, Order, OrderItem, Subscription and enums (database tables)
 ├── dto/           Request and response records
 └── exception/     GlobalExceptionHandler (Problem Details error responses)
 ```
@@ -107,6 +113,8 @@ export ADMIN_PASSWORD=change_me_please
 
 The API starts on **http://localhost:8080**. In IntelliJ IDEA, add the same variables under *Run → Edit Configurations → Environment variables* on a single run configuration.
 
+> **Running tests:** the current test (`contextLoads`) starts the full application, so `./mvnw test` and `./mvnw package` need PostgreSQL running and the environment variables above set. To build without them, use `./mvnw package -DskipTests`.
+
 ---
 
 ## API documentation
@@ -130,6 +138,21 @@ Authorization: Bearer <accessToken>
 | `POST` | `/products` | Admin | Create a product |
 | `PUT` | `/products/{id}` | Admin | Update a product |
 | `DELETE` | `/products/{id}` | Admin | Delete a product |
+| `GET` | `/cart` | Logged in | View your cart |
+| `POST` | `/cart/items` | Logged in | Add a product to your cart |
+| `PATCH` | `/cart/items/{itemId}` | Logged in | Change an item's quantity |
+| `DELETE` | `/cart/items/{itemId}` | Logged in | Remove an item from your cart |
+| `POST` | `/orders` | Logged in | Place an order from your cart |
+| `GET` | `/orders` | Logged in | List your orders |
+| `GET` | `/orders/{orderId}` | Logged in | Get one of your orders |
+| `POST` | `/subscriptions` | Logged in | Create a milk subscription |
+| `GET` | `/subscriptions` | Logged in | List your subscriptions |
+| `GET` | `/subscriptions/{id}` | Logged in | Get one of your subscriptions |
+| `PATCH` | `/subscriptions/{id}/pause` | Logged in | Pause an active subscription |
+| `PATCH` | `/subscriptions/{id}/resume` | Logged in | Resume a paused subscription |
+| `PATCH` | `/subscriptions/{id}/cancel` | Logged in | Cancel a subscription |
+
+Cart, order and subscription endpoints always act on the logged-in user's own data. Asking for another user's item, order or subscription returns `404`.
 
 ---
 
@@ -200,7 +223,7 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 | Status | When |
 |---|---|
 | `400 Bad Request` | A field fails validation |
-| `401 Unauthorized` | Wrong email or password |
+| `401 Unauthorized` | Wrong email or password (returned as a Problem Details body, see [Error responses](#error-responses)) |
 
 Tip: to save the token straight into a shell variable:
 
@@ -324,7 +347,7 @@ curl -X POST http://localhost:8080/api/v1/products \
 | `401 Unauthorized` | Missing, invalid or expired token |
 | `403 Forbidden` | Logged in, but not an admin |
 
-> **Note:** store categories in uppercase (e.g. `MILK`, `OILS`). The list filter converts the search term to uppercase, so a product saved as `Milk` won't match `?category=milk`.
+> **Note:** categories are saved in uppercase, so `"category":"Milk"` is stored as `MILK`. Products created before this change may still have mixed-case categories; to fix them, run `UPDATE products SET category = UPPER(TRIM(category));` once.
 
 #### Update a product
 
@@ -364,6 +387,270 @@ curl -X DELETE http://localhost:8080/api/v1/products/2 \
 | `401 Unauthorized` | Missing, invalid or expired token |
 | `403 Forbidden` | Logged in, but not an admin |
 | `404 Not Found` | No product with this ID |
+| `409 Conflict` | The product is in someone's cart or subscription. Set `available` to `false` with [Update a product](#update-a-product) instead |
+
+---
+
+### Cart
+
+Each logged-in user has one cart. All cart endpoints need a token.
+
+#### Cart item object
+
+| Field | Type | Description |
+|---|---|---|
+| `itemId` | number | Cart item ID, used to update or remove the item |
+| `productId` | number | Product ID |
+| `productName` | string | Product name |
+| `unitPrice` | number | Current product price |
+| `quantity` | number | Quantity in the cart |
+| `lineTotal` | number | `unitPrice × quantity` |
+
+Prices in the cart always reflect the product's current price.
+
+#### View cart
+
+`GET /api/v1/cart`
+
+```bash
+curl http://localhost:8080/api/v1/cart \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response — `200 OK`**
+
+```json
+{
+  "items": [
+    {
+      "itemId": 1,
+      "productId": 2,
+      "productName": "Farm Fresh Milk",
+      "unitPrice": 72.00,
+      "quantity": 2,
+      "lineTotal": 144.00
+    }
+  ],
+  "total": 144.00
+}
+```
+
+#### Add an item
+
+`POST /api/v1/cart/items`
+
+If the product is already in the cart, the quantity is added to the existing item.
+
+| Field | Type | Rules |
+|---|---|---|
+| `productId` | number | Required |
+| `quantity` | number | Required, at least 1 |
+
+```bash
+curl -X POST http://localhost:8080/api/v1/cart/items \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"productId":2,"quantity":2}'
+```
+
+**Response — `201 Created`**: the [cart item object](#cart-item-object).
+
+| Status | When |
+|---|---|
+| `400 Bad Request` | A field fails validation, or the product isn't available |
+| `404 Not Found` | No product with this ID |
+
+#### Change quantity
+
+`PATCH /api/v1/cart/items/{itemId}`
+
+Sets the item's quantity (it replaces the quantity rather than adding to it).
+
+| Field | Type | Rules |
+|---|---|---|
+| `quantity` | number | Required, at least 1 |
+
+```bash
+curl -X PATCH http://localhost:8080/api/v1/cart/items/1 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"quantity":3}'
+```
+
+**Response — `200 OK`**: the updated [cart item object](#cart-item-object).
+
+| Status | When |
+|---|---|
+| `400 Bad Request` | `quantity` is missing or less than 1 |
+| `404 Not Found` | No item with this ID in your cart |
+
+#### Remove an item
+
+`DELETE /api/v1/cart/items/{itemId}`
+
+```bash
+curl -X DELETE http://localhost:8080/api/v1/cart/items/1 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response — `204 No Content`** (empty body)
+
+| Status | When |
+|---|---|
+| `404 Not Found` | No item with this ID in your cart |
+
+---
+
+### Orders
+
+#### Order object
+
+| Field | Type | Description |
+|---|---|---|
+| `orderId` | number | Order ID |
+| `status` | string | `PLACED` or `CANCELLED` |
+| `total` | number | Order total |
+| `createdAt` | string | When the order was placed (ISO 8601) |
+| `items` | array | Order items, each with `productId`, `productName`, `unitPrice`, `quantity` and `lineTotal` |
+
+Product names and prices are copied into the order when it's placed, so later product changes don't alter past orders.
+
+#### Place an order
+
+`POST /api/v1/orders`
+
+Creates an order from everything in your cart, then empties the cart. No request body is needed.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/orders \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response — `201 Created`**
+
+```json
+{
+  "orderId": 1,
+  "status": "PLACED",
+  "total": 144.00,
+  "createdAt": "2026-10-27T18:30:12.418903",
+  "items": [
+    {
+      "productId": 2,
+      "productName": "Farm Fresh Milk",
+      "unitPrice": 72.00,
+      "quantity": 2,
+      "lineTotal": 144.00
+    }
+  ]
+}
+```
+
+| Status | When |
+|---|---|
+| `400 Bad Request` | The cart is empty, or a product in it is no longer available |
+
+#### List orders
+
+`GET /api/v1/orders`
+
+Returns your orders, newest first, as an array of [order objects](#order-object).
+
+#### Get an order
+
+`GET /api/v1/orders/{orderId}`
+
+**Response — `200 OK`**: a single [order object](#order-object).
+
+| Status | When |
+|---|---|
+| `404 Not Found` | No order with this ID belongs to you |
+
+---
+
+### Subscriptions
+
+Recurring milk deliveries.
+
+#### Subscription object
+
+| Field | Type | Description |
+|---|---|---|
+| `subscriptionId` | number | Subscription ID |
+| `productId` | number | Product ID |
+| `productName` | string | Product name |
+| `quantity` | number | Quantity per delivery |
+| `frequency` | string | `DAILY`, `ALTERNATE_DAYS` or `WEEKLY` |
+| `status` | string | `ACTIVE`, `PAUSED` or `CANCELLED` |
+| `startDate` | string | First delivery date (`YYYY-MM-DD`) |
+| `nextDeliveryDate` | string | Next scheduled delivery date (`YYYY-MM-DD`) |
+| `createdAt` | string | When the subscription was created (ISO 8601) |
+
+> **Note:** `nextDeliveryDate` starts as `startDate` and isn't moved forward automatically yet. Delivery scheduling is on the [roadmap](#roadmap).
+
+#### Create a subscription
+
+`POST /api/v1/subscriptions`
+
+| Field | Type | Rules |
+|---|---|---|
+| `productId` | number | Required; the product must be available |
+| `quantity` | number | Required, at least 1 |
+| `frequency` | string | Required: `DAILY`, `ALTERNATE_DAYS` or `WEEKLY` |
+| `startDate` | string | Required, `YYYY-MM-DD`, today or later |
+
+```bash
+curl -X POST http://localhost:8080/api/v1/subscriptions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"productId":2,"quantity":1,"frequency":"DAILY","startDate":"2026-11-01"}'
+```
+
+**Response — `201 Created`**
+
+```json
+{
+  "subscriptionId": 1,
+  "productId": 2,
+  "productName": "Farm Fresh Milk",
+  "quantity": 1,
+  "frequency": "DAILY",
+  "status": "ACTIVE",
+  "startDate": "2026-11-01",
+  "nextDeliveryDate": "2026-11-01",
+  "createdAt": "2026-10-27T18:35:40.102331"
+}
+```
+
+| Status | When |
+|---|---|
+| `400 Bad Request` | A field fails validation, the start date is in the past, or the product isn't available |
+| `404 Not Found` | No product with this ID |
+
+#### List and get subscriptions
+
+- `GET /api/v1/subscriptions` returns your subscriptions, newest first.
+- `GET /api/v1/subscriptions/{id}` returns one [subscription object](#subscription-object), or `404` if it isn't yours.
+
+#### Pause, resume and cancel
+
+| Endpoint | Allowed when | Result |
+|---|---|---|
+| `PATCH /api/v1/subscriptions/{id}/pause` | Status is `ACTIVE` | Status becomes `PAUSED` |
+| `PATCH /api/v1/subscriptions/{id}/resume` | Status is `PAUSED` | Status becomes `ACTIVE`; if the next delivery date has passed, it moves to today |
+| `PATCH /api/v1/subscriptions/{id}/cancel` | Status isn't already `CANCELLED` | Status becomes `CANCELLED` (this can't be undone) |
+
+No request body is needed. Each returns `200 OK` with the updated [subscription object](#subscription-object).
+
+```bash
+curl -X PATCH http://localhost:8080/api/v1/subscriptions/1/pause \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+| Status | When |
+|---|---|
+| `404 Not Found` | No subscription with this ID belongs to you |
+| `409 Conflict` | The change isn't allowed from the current status (e.g. resuming an active subscription) |
 
 ---
 
@@ -404,7 +691,29 @@ Application errors use the **Problem Details** format (`Content-Type: applicatio
 }
 ```
 
-**Authentication and authorisation (`401` / `403`)** come from Spring Security. They have an empty body; the reason is in the `WWW-Authenticate` header, for example:
+**Wrong email or password on login — `401`**
+
+```json
+{
+  "title": "Authentication failed",
+  "status": 401,
+  "detail": "Invalid email or password",
+  "instance": "/api/v1/auth/login"
+}
+```
+
+**Product still in use — `409`**
+
+```json
+{
+  "title": "Request failed",
+  "status": 409,
+  "detail": "Product is in use by carts or subscriptions. Set available=false instead of deleting it.",
+  "instance": "/api/v1/products/2"
+}
+```
+
+**Missing, invalid or expired tokens (`401`) and wrong roles (`403`)** come from Spring Security. They have an empty body; the reason is in the `WWW-Authenticate` header, for example:
 
 ```
 HTTP/1.1 401
@@ -422,7 +731,7 @@ WWW-Authenticate: Bearer error="invalid_token", error_description="An error occu
 | `401 Unauthorized` | Not logged in, or the token is invalid or expired |
 | `403 Forbidden` | Logged in, but the role isn't allowed |
 | `404 Not Found` | Resource doesn't exist |
-| `409 Conflict` | Duplicate resource (e.g. email already registered) |
+| `409 Conflict` | Conflicts with existing data (e.g. email already registered, product still in use, or a subscription status change that isn't allowed) |
 
 ---
 
@@ -430,10 +739,12 @@ WWW-Authenticate: Bearer error="invalid_token", error_description="An error occu
 
 - [x] Product catalogue with pagination and filtering
 - [x] JWT authentication and role-based access control
+- [x] Shopping cart
+- [x] Order placement and order history
+- [x] Milk subscriptions with pause, resume and cancel
+- [ ] Automatic delivery scheduling for subscriptions
+- [ ] Order cancellation
 - [ ] Customer profiles and delivery addresses
-- [ ] Shopping cart
-- [ ] Order placement and order history
-- [ ] Milk subscriptions with scheduling and pause/resume
 - [ ] Payment-gateway sandbox integration
 - [ ] Unit and integration tests (JUnit, MockMvc)
 - [ ] Docker setup for local development
